@@ -16,6 +16,7 @@ from repository_service_tuf_api import (
     repository_metadata,
     settings_repository,
 )
+from repository_service_tuf_api.online_keys import online_key_catalog
 
 
 class PutData(BaseModel):
@@ -100,7 +101,17 @@ class GetResponse(BaseModel):
     model_config = ConfigDict(
         json_schema_extra={
             "example": {
-                "data": example_settings,
+                "data": {
+                    **example_settings,
+                    "online_keys": [
+                        {
+                            "keyid": "a1b2c3...",
+                            "name": "Online Key",
+                            "keytype": "ed25519",
+                            "scheme": "ed25519",
+                        }
+                    ],
+                },
                 "message": "Current Settings",
             }
         }
@@ -122,8 +133,25 @@ def get() -> GetResponse:
 
     # Forces all values to be refreshed
     settings_repository.fresh()
+    repository_settings = settings_repository.to_dict()
+    trusted_root = next(
+        (
+            value
+            for key, value in repository_settings.items()
+            if key.upper() == "TRUSTED_ROOT"
+        ),
+        None,
+    )
+
     lower_case_settings = {}
-    for k, v in settings_repository.to_dict().items():
+    for k, v in repository_settings.items():
+        if k.upper() in {
+            "TRUSTED_ROOT",
+            "TRUSTED_TARGETS",
+            "ONLINE_KEY",
+            "ONLINE_KEYS",
+        }:
+            continue
         if isinstance(v, str):
             v = v.lower()
 
@@ -133,5 +161,10 @@ def get() -> GetResponse:
         lower_case_settings[k.lower()] = v
 
     current_settings = {**lower_case_settings}
+    # This is a safe projection: signer URIs and public key values are not
+    # included. Always include the additive field as a capability contract.
+    current_settings["online_keys"] = (
+        online_key_catalog(trusted_root) if trusted_root is not None else []
+    )
 
     return GetResponse(data=current_settings, message="Current Settings")

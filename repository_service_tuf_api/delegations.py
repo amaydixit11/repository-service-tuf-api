@@ -13,8 +13,14 @@ from repository_service_tuf_api import (
     bootstrap_state,
     get_task_id,
     repository_metadata,
+    settings_repository,
 )
 from repository_service_tuf_api.common_models import TUFDelegations
+from repository_service_tuf_api.online_keys import (
+    DelegationValidationError,
+    online_keys_from_root,
+    validate_delegations,
+)
 
 with open("tests/data_examples/metadata/delegation-payload.json") as f:
     content = f.read()
@@ -56,9 +62,12 @@ class DelegationsData(BaseModel):
 
 class MetadataDelegationsPayload(BaseModel):
     model_config = ConfigDict(
-        json_schema_extra={"example": delegation_payload_example}
+        json_schema_extra={"example": delegation_payload_example},
+        extra="forbid",
     )
 
+    # Role-specific online-key selections are represented directly by each
+    # standard TUF DelegatedRole.keyids list. No parallel API field is needed.
     delegations: TUFDelegations
 
 
@@ -73,6 +82,18 @@ class MetadataDelegationDeletePayload(BaseModel):
     )
 
     delegations: DelegationsData
+
+
+def _validate_delegation_keyids(payload: MetadataDelegationsPayload) -> None:
+    trusted_root = settings_repository.get_fresh("TRUSTED_ROOT")
+    try:
+        online_keys = online_keys_from_root(trusted_root)
+        validate_delegations(payload.delegations, online_keys)
+    except DelegationValidationError as e:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={"error": str(e)},
+        ) from e
 
 
 def metadata_delegation(
@@ -90,6 +111,14 @@ def metadata_delegation(
                 ),
             },
         )
+
+    if action in ["add", "update"]:
+        if not isinstance(payload, MetadataDelegationsPayload):
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail={"error": "Delegation payload is required"},
+            )
+        _validate_delegation_keyids(payload)
 
     task_id = get_task_id()
     worker_payload = payload.model_dump(by_alias=True, exclude_none=True)

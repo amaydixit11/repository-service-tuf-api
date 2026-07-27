@@ -65,16 +65,24 @@ class BaseErrorResponse(BaseModel):
 
 
 class TUFSignedDelegationsRoles(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
     name: str
     terminating: bool
     keyids: List[str]
-    threshold: int
-    paths: List[str] | None = None
+    threshold: int = Field(strict=True)
     path_hash_prefixes: List[str] | None = None
     x_rstuf_expire_policy: int = Field(
         alias="x-rstuf-expire-policy",
         description="Expire Policy for the role",
+        gt=0,
+        strict=True,
+    )
+    x_rstuf_num_bins: int | None = Field(
+        alias="x-rstuf-num-bins",
+        description="Number of nested hash bins below this role",
         default=None,
+        strict=True,
     )
     # Note: No validation is required for paths as these patterns are only used
     # to distribute artifacts. No files are created based on them.
@@ -83,9 +91,31 @@ class TUFSignedDelegationsRoles(BaseModel):
     @model_validator(mode="before")
     @classmethod
     def validate_path_patterns(cls, values: Dict[str, Any]):
+        if not isinstance(values, dict):
+            return values
+
+        known_fields = {v.alias or f for f, v in cls.model_fields.items()}
+        for field_name in values:
+            if field_name not in known_fields and (
+                not field_name.startswith("x-")
+                or len(field_name.split("-")) < 3
+            ):
+                raise ValueError(
+                    f"Invalid: `{field_name}` field name, "
+                    "unrecognized_field must use format x-<vendor>-<name>"
+                )
+
         path_patterns = values.get("paths")
-        if any(len(pattern) < 1 for pattern in path_patterns):
+        if isinstance(path_patterns, list) and any(
+            pattern == "" for pattern in path_patterns
+        ):
             raise ValueError("No empty strings are allowed as path patterns")
+
+        keyids = values.get("keyids", [])
+        if isinstance(keyids, list) and len(keyids) != len(set(keyids)):
+            raise ValueError(
+                f"Delegated role {values.get('name')!r} has duplicate keyids"
+            )
 
         return values
 
@@ -98,6 +128,8 @@ class TUFSignedDelegationsSuccinctRoles(BaseModel):
 
 
 class TUFKeys(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
     keytype: str
     scheme: str
     keyval: Dict[Literal["public", "issuer", "identity"], str]
@@ -113,6 +145,26 @@ class TUFKeys(BaseModel):
         description="Online Key URI",
         default=None,
     )
+
+    @model_validator(mode="before")
+    @classmethod
+    def validate_unrecognized_fields(
+        cls, values: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        if not isinstance(values, dict):
+            return values
+
+        known_fields = {v.alias or f for f, v in cls.model_fields.items()}
+        for field_name in values:
+            if field_name not in known_fields and (
+                not field_name.startswith("x-")
+                or len(field_name.split("-")) < 3
+            ):
+                raise ValueError(
+                    f"Invalid: `{field_name}` field name, "
+                    "unrecognized_field must use format x-<vendor>-<name>"
+                )
+        return values
 
 
 class TUFSignedDelegations(BaseModel):
@@ -181,5 +233,27 @@ class TUFMetadata(BaseModel):
 
 
 class TUFDelegations(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     keys: Dict[str, TUFKeys]
     roles: List[TUFSignedDelegationsRoles]
+
+    @model_validator(mode="before")
+    @classmethod
+    def validate_unique_role_names(
+        cls, values: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        if not isinstance(values, dict):
+            return values
+        roles = values.get("roles", [])
+        if not isinstance(roles, list):
+            return values
+        names = [
+            role.get("name")
+            for role in roles
+            if isinstance(role, dict)
+        ]
+        if len(names) != len(set(names)) or len(names) != len(roles):
+            raise ValueError("Delegations contain duplicate role names")
+
+        return values

@@ -26,6 +26,12 @@ from repository_service_tuf_api.common_models import (
     TUFDelegations,
     TUFSigned,
 )
+from repository_service_tuf_api.online_keys import (
+    DelegationValidationError,
+    online_keys_from_root,
+    validate_delegations,
+    validate_online_key_assignments,
+)
 
 # Pattern of allowed names to be used by custom target delegated roles
 DELEGATED_NAMES_PATTERN = "[a-zA-Z0-9_-]+"
@@ -60,6 +66,8 @@ class DelegatedRole(Role):
 
 
 class RolesData(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     root: Role
     targets: Role
     snapshot: Role
@@ -226,6 +234,22 @@ def get_bootstrap() -> BootstrapGetResponse:
     return response
 
 
+def _validate_delegation_keyids(payload: BootstrapPayload) -> None:
+    delegations = payload.settings.roles.delegations
+
+    try:
+        root_metadata = payload.metadata.get("root")
+        online_keys = online_keys_from_root(root_metadata)
+        validate_online_key_assignments(root_metadata, online_keys)
+        if delegations is not None:
+            validate_delegations(delegations, online_keys)
+    except DelegationValidationError as e:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={"error": str(e)},
+        ) from e
+
+
 def post_bootstrap(payload: BootstrapPayload) -> BootstrapPostResponse:
     bs_state = bootstrap_state()
     # If bootstrap ceremony has completed, is executed in the moment ("pre")
@@ -240,6 +264,9 @@ def post_bootstrap(payload: BootstrapPayload) -> BootstrapPostResponse:
                 )
             ).dict(exclude_none=True),
         )
+
+    # Validate before taking the bootstrap lock or dispatching a Celery task.
+    _validate_delegation_keyids(payload)
 
     task_id = get_task_id()
     pre_lock_bootstrap(task_id)
