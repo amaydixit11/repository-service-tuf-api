@@ -166,8 +166,10 @@ class TestGetSettings:
 
         test_response = test_client.get(url)
         assert test_response.status_code == status.HTTP_200_OK
+        # online_keys is always present as a capability contract; it is empty
+        # when no trusted root metadata is available.
         assert test_response.json() == {
-            "data": {"k": "v", "j": ["v1", "v2"]},
+            "data": {"k": "v", "j": ["v1", "v2"], "online_keys": []},
             "message": "Current Settings",
         }
         assert mocked_bootstrap_state.calls == [pretend.call()]

@@ -19,6 +19,7 @@ from repository_service_tuf_api.common_models import TUFDelegations
 from repository_service_tuf_api.online_keys import (
     DelegationValidationError,
     online_keys_from_root,
+    role_keyids_from_targets,
     validate_delegations,
 )
 
@@ -84,11 +85,22 @@ class MetadataDelegationDeletePayload(BaseModel):
     delegations: DelegationsData
 
 
-def _validate_delegation_keyids(payload: MetadataDelegationsPayload) -> None:
+def _validate_delegation_keyids(
+    payload: MetadataDelegationsPayload, action: str
+) -> None:
     trusted_root = settings_repository.get_fresh("TRUSTED_ROOT")
+    # Updates are checked against the currently trusted delegation state so
+    # a role cannot drop a repository online key it already trusts.
+    current_role_keyids = None
+    if action == "update":
+        current_role_keyids = role_keyids_from_targets(
+            settings_repository.get_fresh("TRUSTED_TARGETS")
+        )
     try:
         online_keys = online_keys_from_root(trusted_root)
-        validate_delegations(payload.delegations, online_keys)
+        validate_delegations(
+            payload.delegations, online_keys, current_role_keyids
+        )
     except DelegationValidationError as e:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -118,7 +130,7 @@ def metadata_delegation(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                 detail={"error": "Delegation payload is required"},
             )
-        _validate_delegation_keyids(payload)
+        _validate_delegation_keyids(payload, action)
 
     task_id = get_task_id()
     worker_payload = payload.model_dump(by_alias=True, exclude_none=True)

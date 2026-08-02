@@ -5,11 +5,20 @@
 """Trusted online-key discovery and delegation request validation."""
 
 from collections.abc import Mapping
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 ONLINE_KEY_URI_FIELD = "x-rstuf-online-key-uri"
 KEY_NAME_FIELD = "x-rstuf-key-name"
 NESTED_BINS_FIELD = "x-rstuf-num-bins"
+
+# URI schemes the Worker can resolve to a signer (securesystemslib's
+# SIGNER_FOR_URI_SCHEME plus RSTUF's own file-name signer). A role-local
+# online key may only reference one of these: the scheme selects the signer
+# backend, so an unknown scheme is unusable and an unrestricted one would let
+# a request point the Worker at an arbitrary backend.
+ALLOWED_ONLINE_KEY_URI_SCHEMES = frozenset(
+    {"fn", "envvar", "file", "awskms", "gcpkms", "azurekms", "hv", "sigstore"}
+)
 
 
 class DelegationValidationError(ValueError):
@@ -120,15 +129,61 @@ def validate_online_key_assignments(
             )
 
 
+def role_keyids_from_targets(targets_metadata: Any) -> Dict[str, List[str]]:
+    """Return ``role name -> keyids`` from a targets metadata envelope.
+
+    Used to compare an update against the currently trusted delegation
+    state. Returns an empty mapping when no usable targets metadata exists.
+    """
+    try:
+        targets = _as_dict(targets_metadata)
+    except DelegationValidationError:
+        return {}
+
+    signed = targets.get("signed")
+    if not isinstance(signed, Mapping):
+        return {}
+    delegations = signed.get("delegations")
+    if not isinstance(delegations, Mapping):
+        return {}
+
+    roles = delegations.get("roles")
+    # python-tuf serializes delegated roles as a list; accept a name-keyed
+    # mapping as well so either shape can be passed in.
+    if isinstance(roles, Mapping):
+        roles = list(roles.values())
+    if not isinstance(roles, list):
+        return {}
+
+    current: Dict[str, List[str]] = {}
+    for role in roles:
+        if not isinstance(role, Mapping):
+            continue
+        name = role.get("name")
+        keyids = role.get("keyids", [])
+        if isinstance(name, str) and isinstance(keyids, list):
+            current[name] = [k for k in keyids if isinstance(k, str)]
+    return current
+
+
 def validate_delegations(
     delegations: Any,
     online_keys: Mapping[str, Any],
+    current_role_keyids: Optional[Mapping[str, List[str]]] = None,
 ) -> None:
     """Validate TUF delegation key references without changing the payload.
 
-    Empty role keyids mean repository defaults. Non-empty keyids may reference
-    URI-tagged root keys, public keys supplied in ``delegations.keys``, or both.
-    Nested bins are Worker-managed and therefore support online keys only.
+    Empty role keyids mean repository defaults. Non-empty keyids may
+    reference URI-tagged root keys, public keys supplied in
+    ``delegations.keys``, or both. Nested bins are Worker-managed and so
+    require keys the Worker can sign with (repository or role-local online
+    keys).
+
+    ``current_role_keyids`` is the currently trusted ``role -> keyids`` state
+    (update operations only). When given, a role may not drop a repository
+    online key it currently trusts: trusting a repository key grants no
+    privilege over it, and removing one is reserved for root-signed
+    operations.
     """
     data = _as_dict(delegations)
     delegation_keys = data.get("keys", {})
@@ -142,8 +197,31 @@ def validate_delegations(
     if shadowed:
         keyids = ", ".join(sorted(shadowed))
         raise DelegationValidationError(
-            f"Online keyids must not be redefined in delegations.keys: {keyids}"
+            "Online keyids must not be redefined in delegations.keys: "
+            f"{keyids}"
         )
+
+    # Role-local online keys: a supplied key may declare an online-key URI so
+    # the Worker can sign that role automatically. Only allowlisted schemes
+    # are accepted, so a request cannot select an arbitrary signer backend.
+    role_local_online_keyids = set()
+    for keyid, key in delegation_keys.items():
+        key_data = key if isinstance(key, Mapping) else _as_dict(key)
+        if ONLINE_KEY_URI_FIELD not in key_data:
+            continue  # offline key: nothing for the Worker to resolve
+        uri = key_data[ONLINE_KEY_URI_FIELD]
+        if not isinstance(uri, str) or not uri:
+            raise DelegationValidationError(
+                f"Key {keyid!r} has an invalid {ONLINE_KEY_URI_FIELD}"
+            )
+        scheme = uri.split(":", 1)[0]
+        if scheme not in ALLOWED_ONLINE_KEY_URI_SCHEMES:
+            allowed = ", ".join(sorted(ALLOWED_ONLINE_KEY_URI_SCHEMES))
+            raise DelegationValidationError(
+                f"Key {keyid!r} uses unsupported online-key URI scheme "
+                f"{scheme!r}; allowed schemes: {allowed}"
+            )
+        role_local_online_keyids.add(keyid)
 
     seen_roles = set()
     for role in roles:
@@ -176,6 +254,16 @@ def validate_delegations(
             raise DelegationValidationError(
                 f"Role {role_name!r} references unknown keyids: {keyids}"
             )
+
+        if current_role_keyids is not None:
+            current = set(current_role_keyids.get(role_name, []))
+            removed_online = (current & online_keyids) - selected_keyids
+            if removed_online:
+                keyids = ", ".join(sorted(removed_online))
+                raise DelegationValidationError(
+                    f"Role {role_name!r} cannot remove repository online "
+                    f"key(s) {keyids}; use a root metadata update"
+                )
 
         threshold = role.get("threshold")
         if not isinstance(threshold, int) or isinstance(threshold, bool):
@@ -218,13 +306,17 @@ def validate_delegations(
             raise DelegationValidationError(
                 f"Role {role_name!r} nested hash bins require threshold 1"
             )
-        if not online_keyids:
+        # Bins are generated and signed by the Worker, so every key the
+        # parent trusts must be Worker-signable: a repository online key or
+        # a role-local online key.
+        signable_keyids = online_keyids | role_local_online_keyids
+        if not signable_keyids:
             raise DelegationValidationError(
                 f"Role {role_name!r} nested hash bins require at least one "
-                "configured online key"
+                "online key"
             )
-        if selected_keyids and not selected_keyids.issubset(online_keyids):
+        if selected_keyids and not selected_keyids.issubset(signable_keyids):
             raise DelegationValidationError(
-                f"Role {role_name!r} nested hash-bin keyids must be a subset "
-                "of the configured online keys"
+                f"Role {role_name!r} nested hash-bin keyids must all be "
+                "online keys"
             )
