@@ -157,8 +157,13 @@ class TestPutDelegationAPI:
         # Mock datetime
         monkeypatch.setattr(f"{MOCK_PATH}.datetime", fake_datetime)
 
-        # Trusted metadata the delegation validator reads
-        _mock_settings(monkeypatch)
+        # Trusted metadata the delegation validator reads. An update is
+        # validated against the currently trusted delegation state, so a
+        # (parseable) trusted targets envelope must be present.
+        _mock_settings(
+            monkeypatch,
+            trusted_targets={"signed": {"delegations": {"roles": []}}},
+        )
 
         # Load test payload
         with open("tests/data_examples/metadata/delegation-payload.json") as f:

@@ -176,6 +176,31 @@ class TestGetSettings:
         assert fake_settings.fresh.calls == [pretend.call()]
         assert fake_settings.to_dict.calls == [pretend.call()]
 
+    def test_get_settings_malformed_trusted_root_degrades(
+        self, test_client, monkeypatch
+    ):
+        # A present-but-unparseable trusted root must not 500 the config
+        # endpoint; the online-key catalogue degrades to an empty list.
+        url = "/api/v1/config"
+        monkeypatch.setattr(
+            f"{MOCK_PATH}.bootstrap_state",
+            pretend.call_recorder(lambda *a: pretend.stub(bootstrap=True)),
+        )
+        fake_settings = pretend.stub(
+            fresh=pretend.call_recorder(lambda: None),
+            to_dict=pretend.call_recorder(
+                lambda: {"k": "v", "TRUSTED_ROOT": "garbage"}
+            ),
+        )
+        monkeypatch.setattr(f"{MOCK_PATH}.settings_repository", fake_settings)
+
+        test_response = test_client.get(url)
+        assert test_response.status_code == status.HTTP_200_OK
+        assert test_response.json() == {
+            "data": {"k": "v", "online_keys": []},
+            "message": "Current Settings",
+        }
+
     def test_get_settings_without_bootstrap(self, test_client, monkeypatch):
         url = "/api/v1/config"
 

@@ -179,12 +179,19 @@ class TestRoleKeyidsFromTargets:
     @pytest.mark.parametrize(
         "targets",
         [
-            None,
-            {},
             {"signed": {}},
             {"signed": {"delegations": {}}},
             {"signed": {"delegations": {"roles": "bad"}}},
         ],
     )
-    def test_missing_or_malformed_returns_empty(self, targets):
+    def test_no_delegated_roles_returns_empty(self, targets):
+        # Trusted targets present but with no usable delegated-role state:
+        # nothing to guard, so an empty mapping is correct.
         assert role_keyids_from_targets(targets) == {}
+
+    @pytest.mark.parametrize("targets", [None, {}, "not-json"])
+    def test_absent_or_malformed_fails_closed(self, targets):
+        # Absent/unparseable trusted targets must NOT silently disable the
+        # removal guard on an update; fail closed so the caller returns 422.
+        with pytest.raises(DelegationValidationError):
+            role_keyids_from_targets(targets)

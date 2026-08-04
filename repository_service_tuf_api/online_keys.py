@@ -133,18 +133,27 @@ def role_keyids_from_targets(targets_metadata: Any) -> Dict[str, List[str]]:
     """Return ``role name -> keyids`` from a targets metadata envelope.
 
     Used to compare an update against the currently trusted delegation
-    state. Returns an empty mapping when no usable targets metadata exists.
+    state. Returns an empty mapping when the repository has no delegated
+    roles, but fails closed (raises ``DelegationValidationError``) when the
+    trusted targets metadata is absent or malformed -- otherwise a parsing
+    failure would silently disable the online-key removal guard on updates.
     """
     try:
         targets = _as_dict(targets_metadata)
-    except DelegationValidationError:
-        return {}
+    except DelegationValidationError as e:
+        raise DelegationValidationError(
+            "Trusted targets metadata is unavailable; cannot validate the "
+            "delegation update against the current state"
+        ) from e
 
     signed = targets.get("signed")
     if not isinstance(signed, Mapping):
-        return {}
+        raise DelegationValidationError(
+            "Trusted targets metadata is malformed (missing 'signed')"
+        )
     delegations = signed.get("delegations")
     if not isinstance(delegations, Mapping):
+        # A repository with no delegations block has no role state to guard.
         return {}
 
     roles = delegations.get("roles")

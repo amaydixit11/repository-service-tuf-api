@@ -16,7 +16,10 @@ from repository_service_tuf_api import (
     repository_metadata,
     settings_repository,
 )
-from repository_service_tuf_api.online_keys import online_key_catalog
+from repository_service_tuf_api.online_keys import (
+    DelegationValidationError,
+    online_key_catalog,
+)
 
 
 class PutData(BaseModel):
@@ -163,8 +166,15 @@ def get() -> GetResponse:
     current_settings = {**lower_case_settings}
     # This is a safe projection: signer URIs and public key values are not
     # included. Always include the additive field as a capability contract.
-    current_settings["online_keys"] = (
-        online_key_catalog(trusted_root) if trusted_root is not None else []
-    )
+    # A malformed trusted root must not take down the whole config endpoint,
+    # so degrade to an empty catalogue rather than surfacing a 500.
+    try:
+        current_settings["online_keys"] = (
+            online_key_catalog(trusted_root)
+            if trusted_root is not None
+            else []
+        )
+    except DelegationValidationError:
+        current_settings["online_keys"] = []
 
     return GetResponse(data=current_settings, message="Current Settings")

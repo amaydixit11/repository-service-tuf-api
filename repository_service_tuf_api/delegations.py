@@ -89,14 +89,16 @@ def _validate_delegation_keyids(
     payload: MetadataDelegationsPayload, action: str
 ) -> None:
     trusted_root = settings_repository.get_fresh("TRUSTED_ROOT")
-    # Updates are checked against the currently trusted delegation state so
-    # a role cannot drop a repository online key it already trusts.
-    current_role_keyids = None
-    if action == "update":
-        current_role_keyids = role_keyids_from_targets(
-            settings_repository.get_fresh("TRUSTED_TARGETS")
-        )
     try:
+        # Updates are checked against the currently trusted delegation state
+        # so a role cannot drop a repository online key it already trusts.
+        # Resolved inside the try so unusable trusted-targets metadata fails
+        # closed as a 422 rather than surfacing as an unhandled 500.
+        current_role_keyids = None
+        if action == "update":
+            current_role_keyids = role_keyids_from_targets(
+                settings_repository.get_fresh("TRUSTED_TARGETS")
+            )
         online_keys = online_keys_from_root(trusted_root)
         validate_delegations(
             payload.delegations, online_keys, current_role_keyids
