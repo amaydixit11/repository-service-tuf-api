@@ -644,6 +644,70 @@ class TestGetMetadataSign:
         assert fake_targets_pending_metadata.to_dict.calls == [pretend.call()]
         assert fake_targets_trusted_metadata.to_dict.calls == [pretend.call()]
 
+    def test_get_metadata_sign_with_delegated_role(
+        self, test_client, monkeypatch
+    ):
+        # Phase 3: a pending CUSTOM-DELEGATION role ("logs") awaiting offline
+        # signatures is surfaced by the generic *_SIGNING scan under its own
+        # role name, with trusted_targets attached (its _type is "targets").
+        mocked_bootstrap_state = pretend.call_recorder(
+            lambda *a: pretend.stub(bootstrap=True, state="signing")
+        )
+        monkeypatch.setattr(
+            f"{MOCK_PATH}.bootstrap_state", mocked_bootstrap_state
+        )
+
+        pending_logs_dict = {
+            "signatures": [],
+            "signed": {
+                "_type": "targets",
+                "spec_version": "1.0.0",
+                "expires": "2030-01-01T00:00:00Z",
+                "targets": {},
+                "version": 2,
+            },
+        }
+        trusted_targets_dict = {
+            "signatures": [{"keyid": "keyid", "sig": "sig"}],
+            "signed": {
+                "_type": "targets",
+                "spec_version": "1.0.0",
+                "expires": "2030-01-01T00:00:00Z",
+                "targets": {},
+                "version": 1,
+            },
+        }
+        fake_logs = pretend.stub(to_dict=lambda: pending_logs_dict)
+        fake_trusted_targets = pretend.stub(
+            to_dict=lambda: trusted_targets_dict
+        )
+
+        def get_role(setting: str):
+            if setting == "LOGS_SIGNING":
+                return fake_logs
+            elif setting == "TRUSTED_TARGETS":
+                return fake_trusted_targets
+            return None
+
+        mocked_settings_repository = pretend.stub(
+            reload=pretend.call_recorder(lambda: None),
+            get=pretend.call_recorder(lambda a: get_role(a)),
+            LOGS_SIGNING=fake_logs,
+            TRUSTED_TARGETS=fake_trusted_targets,
+        )
+        monkeypatch.setattr(
+            f"{MOCK_PATH}.settings_repository", mocked_settings_repository
+        )
+
+        response = test_client.get(SIGN_URL)
+        assert response.status_code == status.HTTP_200_OK, response.text
+        body = response.json()
+        assert body["data"]["metadata"]["logs"] == pending_logs_dict
+        assert (
+            body["data"]["metadata"]["trusted_targets"] == trusted_targets_dict
+        )
+        assert body["message"] == "Metadata role(s) pending signing"
+
     def test_get_metadata_sign_with_trusted_root_no_pending(
         self, test_client, monkeypatch
     ):
