@@ -68,6 +68,26 @@ class TestRoleLocalOnlineKeys:
 
         validate_delegations(delegations, ONLINE_KEYS)
 
+    @pytest.mark.parametrize(
+        "uri",
+        [
+            f"awskms:{ROLE_KEYID}",
+            f"gcpkms:{ROLE_KEYID}",
+            f"azurekms:{ROLE_KEYID}",
+            f"hv:{ROLE_KEYID}",
+        ],
+    )
+    def test_role_local_online_key_backend_schemes_accepted(self, uri):
+        # Phase 4: a role-local online key from any supported non-interactive
+        # backend (cloud KMS / HashiCorp Vault) is accepted; the Worker's
+        # SignerStore resolves the scheme to the backend at signing time.
+        delegations = {
+            "keys": {ROLE_KEYID: _key(uri=uri)},
+            "roles": [_role([ROLE_KEYID])],
+        }
+
+        validate_delegations(delegations, ONLINE_KEYS)
+
     def test_role_local_online_key_can_back_nested_bins(self):
         # Bins are Worker-signed, and a role-local online key is signable.
         delegations = {
