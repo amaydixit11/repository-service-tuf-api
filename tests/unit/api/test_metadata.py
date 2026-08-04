@@ -708,6 +708,47 @@ class TestGetMetadataSign:
         )
         assert body["message"] == "Metadata role(s) pending signing"
 
+    def test_get_metadata_sign_targets_pending_no_trusted_targets(
+        self, test_client, monkeypatch
+    ):
+        # Phase 3 hardening: a pending targets/delegated role must not 500 the
+        # endpoint if TRUSTED_TARGETS is absent (mirrors the root guard).
+        mocked_bootstrap_state = pretend.call_recorder(
+            lambda *a: pretend.stub(bootstrap=True, state="signing")
+        )
+        monkeypatch.setattr(
+            f"{MOCK_PATH}.bootstrap_state", mocked_bootstrap_state
+        )
+        pending_logs_dict = {
+            "signatures": [],
+            "signed": {
+                "_type": "targets",
+                "spec_version": "1.0.0",
+                "expires": "2030-01-01T00:00:00Z",
+                "targets": {},
+                "version": 2,
+            },
+        }
+        fake_logs = pretend.stub(to_dict=lambda: pending_logs_dict)
+
+        mocked_settings_repository = pretend.stub(
+            reload=pretend.call_recorder(lambda: None),
+            get=pretend.call_recorder(
+                lambda a: fake_logs if a == "LOGS_SIGNING" else None
+            ),
+            LOGS_SIGNING=fake_logs,
+        )
+        monkeypatch.setattr(
+            f"{MOCK_PATH}.settings_repository", mocked_settings_repository
+        )
+
+        response = test_client.get(SIGN_URL)
+        assert response.status_code == status.HTTP_200_OK, response.text
+        body = response.json()
+        assert body["data"]["metadata"]["logs"] == pending_logs_dict
+        # No trusted_targets available -> not attached, and no crash.
+        assert "trusted_targets" not in body["data"]["metadata"]
+
     def test_get_metadata_sign_with_trusted_root_no_pending(
         self, test_client, monkeypatch
     ):
