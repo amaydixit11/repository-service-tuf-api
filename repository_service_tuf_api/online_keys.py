@@ -17,7 +17,20 @@ NESTED_BINS_FIELD = "x-rstuf-num-bins"
 # backend, so an unknown scheme is unusable and an unrestricted one would let
 # a request point the Worker at an arbitrary backend.
 ALLOWED_ONLINE_KEY_URI_SCHEMES = frozenset(
-    {"fn", "envvar", "file", "awskms", "gcpkms", "azurekms", "hv", "sigstore"}
+    {
+        "fn",
+        "envvar",
+        "file",
+        # securesystemslib's current CryptoSigner file scheme (the Worker's
+        # signer resolver registers "file2", not "file"); a file-based online
+        # key must use this scheme to be resolvable at signing time.
+        "file2",
+        "awskms",
+        "gcpkms",
+        "azurekms",
+        "hv",
+        "sigstore",
+    }
 )
 
 

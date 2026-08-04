@@ -57,6 +57,17 @@ class TestRoleLocalOnlineKeys:
 
         validate_delegations(delegations, ONLINE_KEYS)
 
+    def test_role_local_online_key_file2_scheme_accepted(self):
+        # "file2" is securesystemslib's current file signer scheme (what the
+        # Worker resolver registers); a file-based role-local online key must
+        # be accepted so it can actually resolve at signing time.
+        delegations = {
+            "keys": {ROLE_KEYID: _key(uri=f"file2:/keys/{ROLE_KEYID}")},
+            "roles": [_role([ROLE_KEYID])],
+        }
+
+        validate_delegations(delegations, ONLINE_KEYS)
+
     def test_role_local_online_key_can_back_nested_bins(self):
         # Bins are Worker-signed, and a role-local online key is signable.
         delegations = {
